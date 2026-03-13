@@ -3201,9 +3201,26 @@ def load_addresses(path: str) -> List[str]:
                     return [str(d) for d in data[key] if d]
     except (json.JSONDecodeError, TypeError):
         pass
-    return [ln.strip() for ln in raw.splitlines() if ln.strip()]
-
-
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    expanded: List[str] = []
+    for line in lines:
+        # Skip comment lines
+        if line.startswith("#"):
+            continue
+        # Try to parse as CIDR network
+        try:
+            net = ipaddress.IPv4Network(line, strict=False)
+            # If it's a host address (no mask or /32), just add as-is
+            if net.prefixlen == 32:
+                expanded.append(str(net.network_address))
+            else:
+                expanded.extend(str(ip) for ip in net.hosts())
+            continue
+        except (ValueError, TypeError):
+            pass
+        # Not a CIDR — keep original (domain, plain IP, etc.)
+        expanded.append(line)
+    return expanded
 def _split_to_24s(subnets: List[str]) -> list:
     """Split CIDR subnets into /24 blocks, deduplicate."""
     seen = set()
