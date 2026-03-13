@@ -406,9 +406,15 @@ def _read_key_blocking() -> str:
     """Read a single key press (blocking). Returns key name."""
     if sys.platform == "win32":
         import msvcrt
-        k = msvcrt.getch()
+        try:
+            k = msvcrt.getch()
+        except OSError:
+            return "esc"
         if k in (b"\x00", b"\xe0"):
-            k2 = msvcrt.getch()
+            try:
+                k2 = msvcrt.getch()
+            except OSError:
+                return ""
             return {b"H": "up", b"P": "down", b"K": "left", b"M": "right"}.get(k2, "")
         if k == b"\r":
             return "enter"
@@ -449,8 +455,11 @@ def _read_key_nb(timeout: float = 0.05) -> Optional[str]:
     """Non-blocking key read. Returns None if no key."""
     if sys.platform == "win32":
         import msvcrt
-        if msvcrt.kbhit():
-            return _read_key_blocking()
+        try:
+            if msvcrt.kbhit():
+                return _read_key_blocking()
+        except OSError:
+            pass
         time.sleep(timeout)
         return None
     else:
@@ -489,7 +498,10 @@ def _wait_any_key():
     """Simple blocking wait for any keypress. More robust than _read_key_blocking for popups."""
     if sys.platform == "win32":
         import msvcrt
-        msvcrt.getch()
+        try:
+            msvcrt.getch()
+        except OSError:
+            pass
     else:
         import termios, tty
         fd = sys.stdin.fileno()
@@ -510,7 +522,11 @@ def _prompt_number(prompt: str, max_val: int) -> Optional[int]:
     if sys.platform == "win32":
         import msvcrt
         while True:
-            k = msvcrt.getch()
+            try:
+                k = msvcrt.getch()
+            except OSError:
+                _w("\n")
+                return None
             if k == b"\r":
                 break
             if k == b"\x1b" or k == b"\x03":
@@ -1322,8 +1338,11 @@ def _flush_stdin():
     if sys.platform == "win32":
         import msvcrt
         time.sleep(0.05)  # let paste buffer settle
-        while msvcrt.kbhit():
-            msvcrt.getwch()  # getwch avoids echo
+        try:
+            while msvcrt.kbhit():
+                msvcrt.getwch()  # getwch avoids echo
+        except OSError:
+            pass
     else:
         import select
         fd = sys.stdin.fileno()
@@ -3201,26 +3220,9 @@ def load_addresses(path: str) -> List[str]:
                     return [str(d) for d in data[key] if d]
     except (json.JSONDecodeError, TypeError):
         pass
-    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
-    expanded: List[str] = []
-    for line in lines:
-        # Skip comment lines
-        if line.startswith("#"):
-            continue
-        # Try to parse as CIDR network
-        try:
-            net = ipaddress.IPv4Network(line, strict=False)
-            # If it's a host address (no mask or /32), just add as-is
-            if net.prefixlen == 32:
-                expanded.append(str(net.network_address))
-            else:
-                expanded.extend(str(ip) for ip in net.hosts())
-            continue
-        except (ValueError, TypeError):
-            pass
-        # Not a CIDR — keep original (domain, plain IP, etc.)
-        expanded.append(line)
-    return expanded
+    return [ln.strip() for ln in raw.splitlines() if ln.strip()]
+
+
 def _split_to_24s(subnets: List[str]) -> list:
     """Split CIDR subnets into /24 blocks, deduplicate."""
     seen = set()
@@ -4035,9 +4037,9 @@ def _help_getting_started() -> List[str]:
         f"   {A.WHT} t {A.RST}  Template + address list mode",
         f"   {A.WHT} f {A.RST}  Find clean Cloudflare IPs",
         f"   {A.WHT} x {A.RST}  Xray pipeline test (fragment + transport)",
-        f"   {A.WHT} d {A.RST}  Deploy Xray on a Linux VPS",
+        *([ f"   {A.WHT} d {A.RST}  Deploy Xray on a Linux VPS"] if sys.platform == "linux" else []),
         f"   {A.WHT} o {A.RST}  Worker Proxy (fresh workers.dev SNI)",
-        f"   {A.WHT} c {A.RST}  Connection Manager",
+        *([ f"   {A.WHT} c {A.RST}  Connection Manager"] if sys.platform == "linux" else []),
         f"   {A.WHT} h {A.RST}  This help menu",
         f"   {A.WHT} q {A.RST}  Quit",
         "",
@@ -4373,7 +4375,7 @@ def tui_show_guide():
         ("Scan & Test Modes",          "File scan, subscription, template",        _help_scan_modes),
         ("Xray Pipeline Test",         "Fragment + transport pipeline testing",    _help_xray_test),
         ("Clean IP Finder",            "Find reachable Cloudflare edge IPs",      _help_clean_finder),
-        ("Deploy & Server Management", "Install Xray on VPS, manage connections", _help_deploy),
+        *([ ("Deploy & Server Management", "Install Xray on VPS, manage connections", _help_deploy)] if sys.platform == "linux" else []),
         ("Worker Proxy",               "Fresh workers.dev SNI for any config",    _help_worker_proxy),
         ("CLI Reference",              "All command-line flags and examples",      _help_cli_reference),
     ]
@@ -4602,11 +4604,12 @@ def _clean_show_results(results: List[Tuple[str, float]], elapsed: str) -> Optio
             _w(f"\n {A.BOLD}{A.CYN}Speed Test with Clean IPs{A.RST}\n")
             _w(f" {A.DIM}Paste a VLESS/VMess config URI. The address in it will be{A.RST}\n")
             _w(f" {A.DIM}replaced with each clean IP, then all configs get speed-tested.{A.RST}\n\n")
+            _restore_console_input()
             _w(f" {A.CYN}Template:{A.RST} ")
             _fl()
             try:
                 tpl = input().strip()
-            except (EOFError, KeyboardInterrupt):
+            except (EOFError, KeyboardInterrupt, OSError):
                 continue
             if not tpl or not parse_config(tpl):
                 _w(f" {A.RED}Invalid VLESS/VMess URI.{A.RST}\n")
@@ -4722,11 +4725,12 @@ async def tui_run_clean_finder() -> Optional[Tuple[str, str]]:
 def _tui_prompt_text(label: str) -> Optional[str]:
     """Show cursor, prompt for text input, return stripped text or None."""
     _w(A.SHOW)
+    _restore_console_input()
     _w(f"\n {A.CYN}{label}{A.RST} ")
     _fl()
     try:
         val = input().strip()
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, OSError):
         return None
     return val if val else None
 
@@ -4782,9 +4786,11 @@ def tui_pick_file() -> Optional[Tuple[str, str]]:
         bx(f"  {A.CYN}{A.BOLD}t{A.RST}.  🧩 {A.WHT}Template + Addresses{A.RST}    {A.DIM}Test one config against many IPs{A.RST}")
         bx(f"  {A.CYN}{A.BOLD}f{A.RST}.  🔍 {A.WHT}Clean IP Finder{A.RST}         {A.DIM}Scan Cloudflare IP ranges{A.RST}")
         bx(f"  {A.CYN}{A.BOLD}x{A.RST}.  ⚡ {A.WHT}Xray Pipeline Test{A.RST}    {A.DIM}Smart: probe → validate → expand → speed{A.RST}")
-        bx(f"  {A.CYN}{A.BOLD}d{A.RST}.  🚀 {A.WHT}Deploy Xray Server{A.RST}    {A.DIM}Install Xray on Linux VPS{A.RST}")
+        if sys.platform == "linux":
+            bx(f"  {A.CYN}{A.BOLD}d{A.RST}.  🚀 {A.WHT}Deploy Xray Server{A.RST}    {A.DIM}Install Xray on Linux VPS{A.RST}")
         bx(f"  {A.CYN}{A.BOLD}o{A.RST}.  ☁  {A.WHT}Worker Proxy{A.RST}          {A.DIM}Fresh workers.dev SNI for any VLESS config{A.RST}")
-        bx(f"  {A.CYN}{A.BOLD}c{A.RST}.  🔧 {A.WHT}Connection Manager{A.RST}    {A.DIM}Manage existing Xray server configs{A.RST}")
+        if sys.platform == "linux":
+            bx(f"  {A.CYN}{A.BOLD}c{A.RST}.  🔧 {A.WHT}Connection Manager{A.RST}    {A.DIM}Manage existing Xray server configs{A.RST}")
         bx("")
         bx(f" {A.DIM}{'─' * (W - 2)}{A.RST}")
         bx(f" {A.DIM}[h] ❓ Help    [q] 🚪 Quit{A.RST}")
@@ -4835,10 +4841,11 @@ def tui_pick_file() -> Optional[Tuple[str, str]]:
             _w(f" {A.DIM}then tests all of them to find the fastest.{A.RST}\n\n")
             _w(f" {A.BOLD}Step 1:{A.RST} {A.CYN}Paste your VLESS/VMess config URI:{A.RST}\n")
             _w(f" {A.DIM}(a full vless://... or vmess://... URI){A.RST}\n ")
+            _restore_console_input()
             _fl()
             try:
                 tpl = input().strip()
-            except (EOFError, KeyboardInterrupt):
+            except (EOFError, KeyboardInterrupt, OSError):
                 continue
             if not tpl or not parse_config(tpl):
                 _w(f" {A.RED}Invalid VLESS/VMess URI.{A.RST}\n")
@@ -4861,11 +4868,11 @@ def tui_pick_file() -> Optional[Tuple[str, str]]:
             return ("find_clean", "")
         if key == "x":
             return ("pipeline", "")
-        if key == "d":
+        if key == "d" and sys.platform == "linux":
             return ("deploy", "")
         if key == "o":
             return ("worker_proxy", "")
-        if key == "c":
+        if key == "c" and sys.platform == "linux":
             return ("connection_manager", "")
         if key.isdigit() and 1 <= int(key) <= len(files):
             return ("file", files[int(key) - 1][0])
@@ -5311,7 +5318,7 @@ async def _post_pipeline_results(
                         _fl()
                         try:
                             _choice = input().strip()
-                        except (EOFError, KeyboardInterrupt):
+                        except (EOFError, KeyboardInterrupt, OSError):
                             _choice = ""
                         if not _choice:
                             break
@@ -5355,12 +5362,13 @@ def tui_pipeline_input(configless: bool = False) -> Optional[PipelineConfig]:
     _w(f" {A.DIM}Smart: probe IPs -> validate config -> expand (IPs x fragments){A.RST}\n\n")
 
     # Step 1: URI
+    _restore_console_input()
     _w(f" {A.BOLD}Step 1:{A.RST} {A.CYN}Paste your VLESS/VMess config URI:{A.RST}\n")
     _w(f" {A.DIM}(must be behind Cloudflare -- CDN, Tunnel, or Workers){A.RST}\n ")
     _fl()
     try:
         uri = input().strip()
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, OSError):
         return None
     parsed = parse_vless_full(uri) or parse_vmess_full(uri)
     if not parsed:
@@ -5421,7 +5429,7 @@ def tui_pipeline_input(configless: bool = False) -> Optional[PipelineConfig]:
     _fl()
     try:
         frag_ch = input().strip() or "1"
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, OSError):
         return None
     frag_map = {"1": "all", "2": "none", "3": "light", "4": "heavy"}
     frag_preset = frag_map.get(frag_ch, "all")
@@ -5452,7 +5460,7 @@ def tui_pipeline_input(configless: bool = False) -> Optional[PipelineConfig]:
     _fl()
     try:
         ip_ch = input().strip() or "1"
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, OSError):
         return None
 
     custom_ips: List[str] = []
@@ -5474,7 +5482,7 @@ def tui_pipeline_input(configless: bool = False) -> Optional[PipelineConfig]:
         _fl()
         try:
             raw_ips = input().strip()
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt, OSError):
             return None
         if raw_ips:
             custom_ips = expand_custom_ips(raw_ips)
@@ -5492,7 +5500,7 @@ def tui_pipeline_input(configless: bool = False) -> Optional[PipelineConfig]:
         _fl()
         try:
             raw_ips = input().strip()
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt, OSError):
             return None
         if raw_ips:
             custom_ips = expand_custom_ips(raw_ips)
@@ -5515,7 +5523,7 @@ def tui_pipeline_input(configless: bool = False) -> Optional[PipelineConfig]:
     _fl()
     try:
         port_ch = input().strip() or "1"
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, OSError):
         return None
 
     if port_ch == "2":
@@ -5527,7 +5535,7 @@ def tui_pipeline_input(configless: bool = False) -> Optional[PipelineConfig]:
         _fl()
         try:
             raw_ports = input().strip()
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt, OSError):
             return None
         probe_ports = []
         for p in raw_ports.split(","):
@@ -5554,7 +5562,7 @@ def tui_pipeline_input(configless: bool = False) -> Optional[PipelineConfig]:
     _fl()
     try:
         _int_ch = input().strip() or "2"
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, OSError):
         return None
     _int_map = {"1": 500, "2": 1500, "3": 3000, "4": 7500}
     max_expansion = _int_map.get(_int_ch, 1500)
@@ -6408,7 +6416,7 @@ def _tui_deploy_detect_ip(ds: "DeployState"):
     _fl()
     try:
         ip_input = input().strip()
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, OSError):
         return False
     if ip_input:
         try:
@@ -6461,7 +6469,7 @@ def _tui_deploy_handle_security(parsed: dict, ds: "DeployState") -> bool:
         _fl()
         try:
             cc = input().strip() or "1"
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt, OSError):
             return False
         ds.tls_domain = parsed.get("sni", "") or parsed.get("host", "")
         if cc == "1" and not ds.tls_domain:
@@ -6483,13 +6491,13 @@ def _tui_deploy_handle_security(parsed: dict, ds: "DeployState") -> bool:
             _fl()
             try:
                 ds.tls_cert_path = input().strip()
-            except (EOFError, KeyboardInterrupt):
+            except (EOFError, KeyboardInterrupt, OSError):
                 return False
             _w(f" {A.CYN}Private key file path:{A.RST} ")
             _fl()
             try:
                 ds.tls_key_path = input().strip()
-            except (EOFError, KeyboardInterrupt):
+            except (EOFError, KeyboardInterrupt, OSError):
                 return False
             if not os.path.isfile(ds.tls_cert_path) or not os.path.isfile(ds.tls_key_path):
                 _w(f" {A.RED}Cert/key files not found.{A.RST}\n")
@@ -6523,7 +6531,7 @@ def _tui_deploy_fresh_wizard(ds: "DeployState") -> Optional["DeployState"]:
         _fl()
         try:
             proto = input().strip() or "1"
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt, OSError):
             break
         protocol = "vmess" if proto == "2" else "vless"
 
@@ -6536,7 +6544,7 @@ def _tui_deploy_fresh_wizard(ds: "DeployState") -> Optional["DeployState"]:
         _fl()
         try:
             sec_choice = input().strip() or "1"
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt, OSError):
             break
         security = {"1": "reality", "2": "tls", "3": "none"}.get(sec_choice, "reality")
 
@@ -6560,7 +6568,7 @@ def _tui_deploy_fresh_wizard(ds: "DeployState") -> Optional["DeployState"]:
         _fl()
         try:
             trans_choice = input().strip() or "1"
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt, OSError):
             break
         if security == "reality":
             transport = {"1": "tcp", "2": "grpc", "3": "h2"}.get(trans_choice, "tcp")
@@ -6573,7 +6581,7 @@ def _tui_deploy_fresh_wizard(ds: "DeployState") -> Optional["DeployState"]:
             _fl()
             try:
                 port_input = input().strip() or "443"
-            except (EOFError, KeyboardInterrupt):
+            except (EOFError, KeyboardInterrupt, OSError):
                 break
             try:
                 port = int(port_input)
@@ -6590,7 +6598,7 @@ def _tui_deploy_fresh_wizard(ds: "DeployState") -> Optional["DeployState"]:
                 _fl()
                 try:
                     _pc = input().strip().lower()
-                except (EOFError, KeyboardInterrupt):
+                except (EOFError, KeyboardInterrupt, OSError):
                     break
                 if _pc not in ("y", "yes"):
                     break
@@ -6609,7 +6617,7 @@ def _tui_deploy_fresh_wizard(ds: "DeployState") -> Optional["DeployState"]:
                 _fl()
                 try:
                     sni = input().strip() or "www.google.com"
-                except (EOFError, KeyboardInterrupt):
+                except (EOFError, KeyboardInterrupt, OSError):
                     break
                 _saved_reality_sni = sni
         elif security == "tls":
@@ -6621,7 +6629,7 @@ def _tui_deploy_fresh_wizard(ds: "DeployState") -> Optional["DeployState"]:
                 _fl()
                 try:
                     sni = input().strip()
-                except (EOFError, KeyboardInterrupt):
+                except (EOFError, KeyboardInterrupt, OSError):
                     break
                 if not sni:
                     _w(f" {A.RED}Domain required for TLS.{A.RST}\n")
@@ -6683,7 +6691,7 @@ def _tui_deploy_fresh_wizard(ds: "DeployState") -> Optional["DeployState"]:
         _fl()
         try:
             again = input().strip().lower()
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt, OSError):
             break
         if again not in ("y", "yes"):
             break
@@ -6700,7 +6708,7 @@ def _tui_deploy_from_uri(ds: "DeployState") -> Optional["DeployState"]:
     _fl()
     try:
         uri = input().strip()
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, OSError):
         return None
 
     parsed = parse_vless_full(uri) or parse_vmess_full(uri)
@@ -6726,7 +6734,7 @@ def _tui_deploy_from_uri(ds: "DeployState") -> Optional["DeployState"]:
     _fl()
     try:
         port_in = input().strip()
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, OSError):
         return None
     if port_in:
         try:
@@ -6757,7 +6765,7 @@ def _tui_deploy_from_file(ds: "DeployState") -> Optional["DeployState"]:
     _fl()
     try:
         path = input().strip()
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, OSError):
         return None
     if not os.path.isfile(path):
         _w(f" {A.RED}File not found.{A.RST}\n")
@@ -6800,7 +6808,7 @@ def _tui_deploy_from_file(ds: "DeployState") -> Optional["DeployState"]:
     _fl()
     try:
         port_in = input().strip()
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, OSError):
         return None
     if port_in:
         try:
@@ -6894,7 +6902,7 @@ async def _tui_run_deploy(args, preloaded_uri: str = ""):
                 _fl()
                 try:
                     _pc = input().strip().lower()
-                except (EOFError, KeyboardInterrupt):
+                except (EOFError, KeyboardInterrupt, OSError):
                     return
                 if _pc not in ("y", "yes"):
                     return
@@ -7207,7 +7215,7 @@ async def _tui_connection_manager(args):
             _fl()
             try:
                 confirm = input().strip().lower()
-            except (EOFError, KeyboardInterrupt):
+            except (EOFError, KeyboardInterrupt, OSError):
                 continue
             if confirm == "uninstall":
                 _w(f"\n {A.DIM}Uninstalling...{A.RST}\n")
@@ -7330,7 +7338,7 @@ async def _tui_connection_manager(args):
                         _fl()
                         try:
                             confirm = input().strip().lower()
-                        except (EOFError, KeyboardInterrupt):
+                        except (EOFError, KeyboardInterrupt, OSError):
                             confirm = ""
                         if confirm in ("y", "yes"):
                             real_idx = inbound_indices[sel]
@@ -7362,7 +7370,7 @@ async def _tui_connection_manager(args):
             _fl()
             try:
                 proto_ch = input().strip() or "1"
-            except (EOFError, KeyboardInterrupt):
+            except (EOFError, KeyboardInterrupt, OSError):
                 continue
             protocol = "vmess" if proto_ch == "2" else "vless"
 
@@ -7374,7 +7382,7 @@ async def _tui_connection_manager(args):
                 if not (1 <= new_port <= 65535):
                     _w(f" {A.YEL}Invalid port, using 443{A.RST}\n")
                     new_port = 443
-            except (EOFError, KeyboardInterrupt):
+            except (EOFError, KeyboardInterrupt, OSError):
                 continue
             except ValueError:
                 _w(f" {A.YEL}Invalid port, using 443{A.RST}\n")
@@ -7387,7 +7395,7 @@ async def _tui_connection_manager(args):
                 _fl()
                 try:
                     _pc = input().strip().lower()
-                except (EOFError, KeyboardInterrupt):
+                except (EOFError, KeyboardInterrupt, OSError):
                     continue
                 if _pc not in ("y", "yes"):
                     continue
@@ -7397,7 +7405,7 @@ async def _tui_connection_manager(args):
                 _fl()
                 try:
                     _pc = input().strip().lower()
-                except (EOFError, KeyboardInterrupt):
+                except (EOFError, KeyboardInterrupt, OSError):
                     continue
                 if _pc not in ("y", "yes"):
                     continue
@@ -7411,7 +7419,7 @@ async def _tui_connection_manager(args):
             _fl()
             try:
                 tr_ch = input().strip() or "1"
-            except (EOFError, KeyboardInterrupt):
+            except (EOFError, KeyboardInterrupt, OSError):
                 continue
             tr_map = {"1": "tcp", "2": "ws", "3": "xhttp", "4": "grpc", "5": "h2"}
             transport = tr_map.get(tr_ch, "tcp")
@@ -7423,7 +7431,7 @@ async def _tui_connection_manager(args):
             _fl()
             try:
                 sec_ch = input().strip() or "3"
-            except (EOFError, KeyboardInterrupt):
+            except (EOFError, KeyboardInterrupt, OSError):
                 continue
             sec_map = {"1": "reality", "2": "tls", "3": "none"}
             security = sec_map.get(sec_ch, "none")
@@ -7452,20 +7460,20 @@ async def _tui_connection_manager(args):
                         _fl()
                         try:
                             _rsni = input().strip() or "www.google.com"
-                        except (EOFError, KeyboardInterrupt):
+                        except (EOFError, KeyboardInterrupt, OSError):
                             _rsni = "www.google.com"
             elif security == "tls":
                 _w(f" {A.DIM}TLS cert path [/usr/local/etc/xray/cert.pem]:{A.RST} ")
                 _fl()
                 try:
                     _tls_cert = input().strip() or "/usr/local/etc/xray/cert.pem"
-                except (EOFError, KeyboardInterrupt):
+                except (EOFError, KeyboardInterrupt, OSError):
                     _tls_cert = "/usr/local/etc/xray/cert.pem"
                 _w(f" {A.DIM}TLS key path  [/usr/local/etc/xray/key.pem]:{A.RST} ")
                 _fl()
                 try:
                     _tls_key = input().strip() or "/usr/local/etc/xray/key.pem"
-                except (EOFError, KeyboardInterrupt):
+                except (EOFError, KeyboardInterrupt, OSError):
                     _tls_key = "/usr/local/etc/xray/key.pem"
 
             new_uuid = deploy_generate_uuid()
@@ -7669,7 +7677,7 @@ async def _tui_worker_proxy(args):
     _fl()
     try:
         uri = input().strip()
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, OSError):
         return
     if not uri:
         _w(f"\n {A.RED}Cancelled.{A.RST}\n")
@@ -7727,7 +7735,7 @@ async def _tui_worker_proxy(args):
     _fl()
     try:
         worker_url = input().strip()
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, OSError):
         return
 
     if not worker_url:
@@ -7768,7 +7776,7 @@ async def _tui_worker_proxy(args):
     _fl()
     try:
         ans = input().strip().lower()
-    except (EOFError, KeyboardInterrupt):
+    except (EOFError, KeyboardInterrupt, OSError):
         ans = "n"
 
     if ans in ("", "y", "yes"):
@@ -8882,6 +8890,13 @@ Examples:
 
     args._mode_set = any(a == "-m" or a.startswith("--mode") for a in sys.argv)
 
+    # Windows: use SelectorEventLoop for compatibility with asyncio.open_connection
+    if sys.platform == "win32":
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        except Exception:
+            pass
+
     try:
         if getattr(args, "xray_install", False):
             path = xray_install()
@@ -8893,6 +8908,9 @@ Examples:
             print(msg)
             return
         if getattr(args, "deploy", None):
+            if sys.platform != "linux":
+                print("Error: --deploy is only supported on Linux.")
+                return
             asyncio.run(run_tui(args, deploy_mode=True))
             return
         if getattr(args, "find_clean", False) and args.no_tui:
