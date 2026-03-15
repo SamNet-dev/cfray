@@ -884,3 +884,9 @@ python3 scanner.py --uninstall
 ### ⭐ Made by Sam — SamNet Technologies
 
 </div>
+
+## 💖 Support
+
+If this project helps you, consider supporting continued development:
+
+**[samnet.dev/donate](https://www.samnet.dev/donate/)**
