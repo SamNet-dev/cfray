@@ -34,7 +34,20 @@ cfray is a single-file Python proxy toolkit for VLESS/VMess configs behind Cloud
 
 ---
 
-### 🚀 Quick Start
+### 🚀 Quick Start (Recommended)
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and run:
+```bash
+uv run --script https://raw.githubusercontent.com/SamNet-dev/cfray/refs/heads/main/scanner.py
+# That's it! Pick your input, choose a mode, and watch the results.
+```
+
+Tip: You can pass any CLI arguments directly to the one-liner:
+```bash
+uv run --script https://... --find-clean --clean-mode quick
+```
+
+### Manual Start
 
 ```bash
 # Download
@@ -507,7 +520,20 @@ cfray یه ابزار کامل پایتونی برای کانفیگ‌های VLE
 
 ---
 
-### 🚀 شروع سریع
+### 🚀 شروع سریع (پیشنهادی)
+
+ابتدا [uv](https://docs.astral.sh/uv/getting-started/installation/) را نصب کرده و سپس دستور زیر را اجرا کنید:
+
+```bash
+uv run --script https://raw.githubusercontent.com/SamNet-dev/cfray/refs/heads/main/scanner.py
+```
+
+**نکته:** می‌توانید هر یک از آرگومان‌های CLI را مستقیماً به دستور تک‌خطی اضافه کنید:
+```bash
+uv run --script https://... --find-clean --clean-mode quick
+```
+
+### شروع دستی
 
 ```bash
 # دانلود
