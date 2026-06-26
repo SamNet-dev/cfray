@@ -9,7 +9,7 @@
 [![Python 3.8+](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://python.org)
 [![Zero Dependencies](https://img.shields.io/badge/Dependencies-Zero-green.svg)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version 1.1](https://img.shields.io/badge/Version-1.1-orange.svg)](#)
+[![Version 1.2](https://img.shields.io/badge/Version-1.2-orange.svg)](#)
 
 [English](#-english) • [فارسی](#-فارسی)
 
@@ -29,25 +29,16 @@ cfray is a single-file Python proxy toolkit for VLESS/VMess configs behind Cloud
 - **Deploy Xray Server** — deploy a full xray-core server on any Linux VPS with systemd, TLS certs, REALITY keys, and multi-config support
 - **Worker Proxy** — generate a Cloudflare Worker script for a fresh `workers.dev` SNI on any VLESS WebSocket config
 - **Connection Manager** — manage inbounds, users, URIs, and uninstall on deployed servers
+- **WARP WireGuard Gen** — generate free anonymous Cloudflare WARP+ WireGuard VPN configs (`--warp`)
+- **Local Sub Server** — host scanned configs locally via built-in HTTP server (`--serve-sub`)
+- **Sub Deduplicator** — clean, validate, and deduplicate subscription links (`--clean-subs`)
+- **Advanced Networking** — DoH DNS resolution (`--doh`), Geo-IP tagging (`--geo`), UDP & censorship probes (`--udp`, `--check-censorship`), Webhooks (`--notify`), Watchdog daemon (`--watch`), Sing-box/Clash Meta export (`--export-client`), Deep Config Inspector (`--inspect`), Jitter benchmark (`--jitter`), Telegram Exporter (`--export-tg`), and HTTP/2 ALPN probe (`--alpn-h2`)
 
 **Zero dependencies.** Just Python 3.8+ and one file.
 
 ---
 
-### 🚀 Quick Start (Recommended)
-
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and run:
-```bash
-uv run --script https://raw.githubusercontent.com/SamNet-dev/cfray/refs/heads/main/scanner.py
-# That's it! Pick your input, choose a mode, and watch the results.
-```
-
-Tip: You can pass any CLI arguments directly to the one-liner:
-```bash
-uv run --script https://... --find-clean --clean-mode quick
-```
-
-### Manual Start
+### 🚀 Quick Start
 
 ```bash
 # Download
@@ -236,6 +227,20 @@ python3 scanner.py [options]
 | `--find-clean`      | Find clean Cloudflare IPs                | off      |
 | `--clean-mode`      | `quick` / `normal` / `full` / `mega`     | `normal` |
 | `--subnets`         | Custom subnets (file or comma-separated) | all CF   |
+| `--warp`            | Generate free WARP+ WireGuard config     | off      |
+| `--serve-sub`       | Start local HTTP subscription server     | off      |
+| `--clean-subs`      | Clean & deduplicate subscription links   | —        |
+| `--watch`           | Daemon watchdog mode (rescan interval)   | off      |
+| `--notify`          | Webhook alert URL (Discord/Telegram)     | —        |
+| `--geo`             | Fetch Geo-IP country & colocation tag    | off      |
+| `--doh`             | Resolve DNS via Cloudflare DoH           | off      |
+| `--udp`             | Test UDP probe over Xray tunnel          | off      |
+| `--check-censorship`| Test HTTP censorship probe over tunnel   | off      |
+| `--export-client`   | Auto-export `singbox` or `clash` profile | —        |
+| `--inspect`         | Deep diagnostic check & syntax validator | —        |
+| `--jitter`          | Multi-probe jitter & loss benchmark      | off      |
+| `--export-tg`       | Export clickable Telegram proxy links    | off      |
+| `--alpn-h2`         | Probe HTTP/2 ALPN multiplexing           | off      |
 
 ---
 
@@ -515,25 +520,16 @@ cfray یه ابزار کامل پایتونی برای کانفیگ‌های VLE
 - **دیپلوی سرور Xray** — نصب سرور xray-core روی هر VPS لینوکسی با systemd، گواهی TLS، کلید REALITY و پشتیبانی چند کانفیگ
 - **پروکسی ورکر** — تولید اسکریپت Worker کلادفلر برای SNI تازه `workers.dev` روی هر کانفیگ VLESS WebSocket
 - **مدیریت اتصالات** — مدیریت inbound‌ها، کاربران، URI‌ها و حذف نصب سرورهای دیپلوی شده
+- **تولیدکننده WARP** — دریافت کانفیگ رایگان و ناشناس Cloudflare WARP+ WireGuard (`--warp`)
+- **سرور اشتراک محلی** — میزبانی کانفیگ‌های اسکن شده روی وب‌سرور داخلی HTTP (`--serve-sub`)
+- **پاک‌کننده اشتراک** — اعتبارسنجی و حذف لینک‌های تکراری از اشتراک‌ها (`--clean-subs`)
+- **قابلیت‌های پیشرفته شبکه** — دی‌ان‌اس DoH (`--doh`)، برچسب موقعیت جغرافیایی (`--geo`)، تست پروب UDP و فیلترینگ (`--udp`, `--check-censorship`)، ارسال هشدار به وب‌هوک (`--notify`)، اسکن دائمی پس‌زمینه (`--watch`)، خروجی Sing-box / Clash Meta (`--export-client`)، بازرس عمیق کانفیگ (`--inspect`)، بنچمارک جیتر (`--jitter`)، خروجی تلگرام (`--export-tg`) و پروب HTTP/2 ALPN (`--alpn-h2`)
 
 **بدون نیاز به نصب چیز اضافه.** فقط Python 3.8+ و یه فایل.
 
 ---
 
-### 🚀 شروع سریع (پیشنهادی)
-
-ابتدا [uv](https://docs.astral.sh/uv/getting-started/installation/) را نصب کرده و سپس دستور زیر را اجرا کنید:
-
-```bash
-uv run --script https://raw.githubusercontent.com/SamNet-dev/cfray/refs/heads/main/scanner.py
-```
-
-**نکته:** می‌توانید هر یک از آرگومان‌های CLI را مستقیماً به دستور تک‌خطی اضافه کنید:
-```bash
-uv run --script https://... --find-clean --clean-mode quick
-```
-
-### شروع دستی
+### 🚀 شروع سریع
 
 ```bash
 # دانلود
@@ -707,9 +703,9 @@ cfray هوشمندانه با محدودیت‌های سرعت‌سنجی کلا
 
 ---
 
-### 🆕 چه چیزهایی در v1.1 اضافه شده
+### 🆕 چه چیزهایی در v1.2 اضافه شده
 
-v1.1 قابلیت‌های **دیپلوی سرور**، **تست پایپلاین**، **پروکسی ورکر** و **مدیریت اتصالات** رو اضافه کرده — cfray رو از یه اسکنر به یه ابزار کامل پروکسی تبدیل کرده.
+نسخه v1.2 قابلیت‌های پیشرفته جدیدی شامل **تولیدکننده WARP WireGuard**، **سرور محلی اشتراک**، **پاک‌کننده اشتراک**، **دی‌ان‌اس DoH**، **برچسب موقعیت جغرافیایی (Geo-IP)**، **پروب‌های UDP و عبور از فیلترینگ**، **وب‌هوک هشدار**، **حالت واچ‌داگ (Watchdog)** و **خروجی Sing-box / Clash Meta** رو به cfray اضافه کرده.
 
 ---
 
@@ -859,7 +855,7 @@ python3 scanner.py    # C رو بزنید
 
 ---
 
-### 🔧 فلگ‌های جدید CLI در v1.1
+### 🔧 فلگ‌های جدید CLI در v1.2
 
 | فلگ | توضیحات | پیشفرض |
 |-----|---------|--------|
@@ -878,6 +874,20 @@ python3 scanner.py    # C رو بزنید
 | `--deploy-key` | مسیر کلید خصوصی TLS | — |
 | `--deploy-ip` | جایگزین آی‌پی شناسایی خودکار سرور | خودکار |
 | `--uninstall` | حذف کامل همه چیزهایی که cfray نصب کرده | خاموش |
+| `--warp` | دریافت کانفیگ VPN ناشناس WARP+ WireGuard | خاموش |
+| `--serve-sub` | راه‌اندازی سرور محلی HTTP برای کانفیگ‌ها | خاموش |
+| `--clean-subs` | پاکسازی و حذف لینک‌های تکراری اشتراک | — |
+| `--watch` | اجرای اسکنر دائمی پس‌زمینه (فاصله زمانی به ثانیه) | خاموش |
+| `--notify` | ارسال هشدار اتمام اسکن به وب‌هوک Discord/Telegram | — |
+| `--geo` | دریافت کد کشور و دیتاسنتر کلادفلر برای آی‌پی‌ها | خاموش |
+| `--doh` | استفاده از Cloudflare DoH برای تبدیل دامنه | خاموش |
+| `--udp` | تست تاخیر پروب UDP روی تانل Xray | خاموش |
+| `--check-censorship`| تست دسترسی HTTP برای تایید عبور از فیلترینگ | خاموش |
+| `--export-client` | ساخت خودکار پروفایل کلاینت Sing-box یا Clash | — |
+| `--inspect` | بررسی عمیق ساختار و عیب‌یابی لینک کانفیگ | — |
+| `--jitter` | اجرای تست چندمرحله‌ای جیتر و پکیج لاس | خاموش |
+| `--export-tg` | ساخت لینک‌های اتصال سریع پروکسی تلگرام | خاموش |
+| `--alpn-h2` | بررسی قابلیت مولتی‌پارچه HTTP/2 ALPN | خاموش |
 
 ---
 
@@ -899,6 +909,18 @@ python3 scanner.py --deploy
 # دیپلوی WS+TLS برای مسیریابی CDN
 python3 scanner.py --deploy --deploy-transport ws --deploy-security tls --deploy-sni example.com
 
+# دریافت کانفیگ وایرگارد WARP کلادفلر
+python3 scanner.py --warp
+
+# پاکسازی و حذف لینک‌های تکراری از اشتراک
+python3 scanner.py --clean-subs sub.txt
+
+# راه‌اندازی سرور محلی کانفیگ روی پورت 8080
+python3 scanner.py --serve-sub 8080
+
+# اسکن دائمی واچ‌داگ هر یک ساعت با ارسال هشدار به وب‌هوک
+python3 scanner.py -i configs.txt --no-tui --watch 3600 --notify https://discord.com/api/webhooks/...
+
 # حذف نصب کامل
 python3 scanner.py --uninstall
 ```
@@ -910,9 +932,3 @@ python3 scanner.py --uninstall
 ### ⭐ Made by Sam — SamNet Technologies
 
 </div>
-
-## 💖 Support
-
-If this project helps you, consider supporting continued development:
-
-**[samnet.dev/donate](https://www.samnet.dev/donate/)**

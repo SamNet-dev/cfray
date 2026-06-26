@@ -2,7 +2,7 @@
 #
 # ┌─────────────────────────────────────────────────────────────────┐
 # │                                                                 │
-# │   ⚡  CF CONFIG SCANNER v1.1                                    │
+# │   ⚡  CF CONFIG SCANNER v1.2                                   │
 # │                                                                 │
 # │   Test VLESS/VMess proxy configs for latency + download speed   │
 # │                                                                 │
@@ -59,7 +59,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 
-VERSION = "1.1"
+VERSION = "1.2"
 SPEED_HOST = "speed.cloudflare.com"
 SPEED_PATH = "/__down"
 DEBUG_LOG = os.path.join("results", "debug.log")
@@ -615,6 +615,12 @@ class Result:
     score: float = 0
     error: str = ""
     alive: bool = False
+    country: str = ""
+    censorship_ok: bool = False
+    udp_ok: bool = False
+    jitter: float = 0.0
+    loss: float = 0.0
+    h2: bool = False
 
 
 class State:
@@ -643,7 +649,12 @@ class State:
         self.finished = False
         self.interrupted = False
         self.saved = False
-        self.latency_cut_n = 0  # how many IPs were cut after latency phase
+        self.latency_cut_n = 0
+        self.use_doh = False
+        self.export_client = ""
+        self.notify_url = ""
+        self.geo_tag = False
+        self.measure_jitter = False
 
 
 @dataclass
@@ -662,6 +673,10 @@ class XrayVariation:
     score: float = 0
     result_uri: str = ""
     native_tested: bool = False
+    colo: str = ""
+    country: str = ""
+    censorship_ok: bool = False
+    udp_ok: bool = False
 
 
 class XrayTestState:
@@ -676,6 +691,8 @@ class XrayTestState:
         self.dead_count = 0
         self.best_speed = 0.0
         self.start_time = 0.0
+        self.check_censorship = False
+        self.check_udp = False
         self.finished = False
         self.interrupted = False
         self.source_uri = ""
@@ -1328,6 +1345,316 @@ def switch_transport(parsed: dict, new_transport: str, path: str = "") -> dict:
         return new
 
     return new
+
+
+# ─── Advanced Proxy & VPN Features (Zero Dependencies) ─────────────────────
+
+
+def resolve_doh(domain: str, timeout: float = 3.0) -> List[str]:
+    """Resolve a domain name over HTTPS using Cloudflare DoH (1.1.1.1)."""
+    if _is_cf_address(domain) or re.match(r"^\d+\.\d+\.\d+\.\d+$", domain):
+        return [domain]
+    url = f"https://1.1.1.1/dns-query?name={urllib.parse.quote(domain)}&type=A"
+    req = urllib.request.Request(url, headers={"Accept": "application/dns-json", "User-Agent": f"cfray/{VERSION}"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+            if data.get("Status") == 0:
+                answers = data.get("Answer", [])
+                return [a["data"] for a in answers if a.get("type") == 1]
+    except Exception:
+        pass
+    return []
+
+
+def fetch_geo_colo(ip: str, timeout: float = 3.0) -> Tuple[str, str]:
+    """Return (colo_code, country_code) for an IP."""
+    url = f"http://{ip}/cdn-cgi/trace"
+    req = urllib.request.Request(url, headers={"Host": "cp.cloudflare.com", "User-Agent": f"cfray/{VERSION}"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            txt = resp.read().decode("utf-8", errors="replace")
+            colo, loc = "", ""
+            for line in txt.splitlines():
+                if line.startswith("colo="): colo = line.split("=", 1)[1].strip()
+                elif line.startswith("loc="): loc = line.split("=", 1)[1].strip()
+            if colo or loc: return colo, loc
+    except Exception:
+        pass
+    try:
+        url2 = f"http://ip-api.com/json/{ip}?fields=countryCode"
+        with urllib.request.urlopen(url2, timeout=timeout) as resp2:
+            data = json.loads(resp2.read().decode())
+            return "", data.get("countryCode", "")
+    except Exception:
+        pass
+    return "", ""
+
+
+def generate_warp_config() -> Tuple[bool, str, str]:
+    """Register anonymous Cloudflare WARP client via API."""
+    try:
+        _xbin = xray_find_binary(None)
+        priv_key, pub_key = "", ""
+        if _xbin:
+            priv_key, pub_key = deploy_generate_reality_keys(_xbin)
+        if not priv_key or not pub_key:
+            return False, "", "WARP generation requires xray binary for x25519 curve keys"
+        
+        url = "https://api.cloudflareclient.com/v0a2158/reg"
+        headers = {"User-Agent": "okhttp/3.12.1", "Content-Type": "application/json"}
+        payload = {
+            "install_id": deploy_generate_uuid(),
+            "tos": time.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            "key": pub_key,
+            "fcm_token": f"{deploy_generate_uuid()}:APA91b{deploy_generate_uuid()[:10]}",
+            "type": "Android", "locale": "en_US"
+        }
+        req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+            cfg = data.get("config", {})
+            peer = cfg.get("peers", [{}])[0] if cfg.get("peers") else {}
+            peer_pub = peer.get("public_key", "")
+            ep = peer.get("endpoint", {"host": "162.159.192.1", "port": 2408})
+            iface = cfg.get("interface", {})
+            addrs = iface.get("addresses", {"v4": "172.16.0.2/32"})
+            v4 = addrs.get("v4", "172.16.0.2/32")
+            v6 = addrs.get("v6", "")
+            addr_str = f"{v4}, {v6}" if v6 else v4
+            
+            wg_conf = f"[Interface]\nPrivateKey = {priv_key}\nAddress = {addr_str}\nDNS = 1.1.1.1, 2606:4700:4700::1111\nMTU = 1280\n\n[Peer]\nPublicKey = {peer_pub}\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = {ep.get('host', '162.159.192.1')}:{ep.get('port', 2408)}\nKeepalive = 25\n"
+            return True, wg_conf, f"Device ID: {data.get('id', '')}"
+    except Exception as e:
+        return False, "", str(e)
+
+
+def export_singbox_json(results: List[Result], top: int = 50) -> str:
+    """Generate Sing-box JSON profile outbounds list."""
+    outbounds = []
+    limit = top if top > 0 else len(results)
+    for r in results[:limit]:
+        for uri in r.uris:
+            parsed = parse_vless_full(uri) or parse_vmess_full(uri)
+            if not parsed: continue
+            tag = urllib.parse.unquote(uri.split("#", 1)[1]) if "#" in uri else f"cf-{r.ip}"
+            ob = {
+                "type": parsed.get("protocol", "vless"),
+                "tag": tag, "server": parsed.get("address", r.ip),
+                "server_port": int(parsed.get("port", 443)),
+                "uuid": parsed.get("uuid", ""),
+            }
+            if ob["type"] == "vmess":
+                ob["security"] = parsed.get("scy", "auto")
+                ob["alter_id"] = int(parsed.get("aid", 0))
+            net = parsed.get("type", "tcp")
+            if net == "ws":
+                tr = {"type": "ws", "path": parsed.get("path", "/ws")}
+                if parsed.get("host"): tr["headers"] = {"Host": parsed.get("host")}
+                ob["transport"] = tr
+            elif net in ("xhttp", "splithttp"):
+                ob["transport"] = {"type": "http", "path": parsed.get("path", "/xhttp")}
+            elif net == "grpc":
+                ob["transport"] = {"type": "grpc", "service_name": parsed.get("serviceName", "grpc")}
+            sec = parsed.get("security", "")
+            if sec == "tls":
+                tls = {"enabled": True, "insecure": True}
+                if parsed.get("sni"): tls["server_name"] = parsed.get("sni")
+                ob["tls"] = tls
+            elif sec == "reality":
+                tls = {"enabled": True, "reality": {"enabled": True, "public_key": parsed.get("pbk", ""), "short_id": parsed.get("sid", "")}}
+                if parsed.get("sni"): tls["server_name"] = parsed.get("sni")
+                ob["tls"] = tls
+            outbounds.append(ob)
+    return json.dumps({"outbounds": outbounds}, indent=2)
+
+
+def export_clash_meta_yaml(results: List[Result], top: int = 50) -> str:
+    """Generate Clash Meta YAML proxies list."""
+    lines = ["proxies:"]
+    limit = top if top > 0 else len(results)
+    for r in results[:limit]:
+        for uri in r.uris:
+            parsed = parse_vless_full(uri) or parse_vmess_full(uri)
+            if not parsed: continue
+            name = urllib.parse.unquote(uri.split("#", 1)[1]) if "#" in uri else f"cf-{r.ip}"
+            name = name.replace('"', '')
+            proto = parsed.get("protocol", "vless")
+            row = f"  - name: \"{name}\"\n    type: {proto}\n    server: {parsed.get('address', r.ip)}\n    port: {parsed.get('port', 443)}\n    uuid: {parsed.get('uuid', '')}\n    network: {parsed.get('type', 'tcp')}"
+            if proto == "vmess":
+                row += f"\n    alterId: {parsed.get('aid', 0)}\n    cipher: {parsed.get('scy', 'auto')}"
+            sec = parsed.get("security", "")
+            if sec in ("tls", "reality"):
+                row += "\n    tls: true\n    skip-cert-verify: true"
+                if parsed.get("sni"): row += f"\n    servername: {parsed.get('sni')}"
+            if sec == "reality":
+                row += f"\n    reality-opts:\n      public-key: {parsed.get('pbk', '')}\n      short-id: {parsed.get('sid', '')}"
+            net = parsed.get("type", "tcp")
+            if net == "ws":
+                row += f"\n    ws-opts:\n      path: \"{parsed.get('path', '/ws')}\""
+                if parsed.get("host"): row += f"\n      headers:\n        Host: {parsed.get('host')}"
+            elif net == "grpc":
+                row += f"\n    grpc-opts:\n      grpc-service-name: \"{parsed.get('serviceName', 'grpc')}\""
+            lines.append(row)
+    return "\n".join(lines) + "\n"
+
+
+def run_sub_server(st: State, port: int = 8080):
+    """Host top configs via local HTTP server."""
+    class SubHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            alive = sorted_alive(st, "score")
+            lines = [u for r in alive[:st.top or 50] for u in r.uris]
+            raw = "\n".join(lines)
+            if self.path.endswith("/b64"):
+                self.wfile.write(base64.b64encode(raw.encode()).decode().encode())
+            else:
+                self.wfile.write(raw.encode())
+        def log_message(self, format, *args): pass
+    server = http.server.HTTPServer(("", port), SubHandler)
+    print(f"\n🚀 Local Subscription Server running at http://localhost:{port}/ (Ctrl+C to stop)")
+    try: server.serve_forever()
+    except KeyboardInterrupt: server.server_close()
+
+
+def clean_subscriptions(source_input: str, output_path: str) -> Tuple[int, int, str]:
+    """Deduplicate and clean subscription links."""
+    configs = fetch_sub(source_input) if source_input.startswith(("http://", "https://")) else load_input(source_input)
+    if not configs: return 0, 0, ""
+    unique_map = {}
+    for c in configs:
+        uri = c.original_uri
+        parsed = parse_vless_full(uri) or parse_vmess_full(uri)
+        if not parsed: continue
+        key = (parsed.get("protocol", "vless"), parsed.get("uuid", ""), parsed.get("host") or parsed.get("sni") or parsed.get("address", ""), parsed.get("path", "/"), parsed.get("port", 443))
+        if key not in unique_map: unique_map[key] = uri
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    out_p = output_path or _results_path("cleaned_sub.txt")
+    with open(out_p, "w", encoding="utf-8") as f:
+        for idx, uri in enumerate(unique_map.values(), 1):
+            base = uri.split("#", 1)[0]
+            f.write(f"{base}#CF-Clean-{idx}\n")
+    return len(configs), len(unique_map), out_p
+
+
+def inspect_uri(uri: str) -> Tuple[bool, str]:
+    """Deep inspection and diagnostic validation of a VLESS/VMess URI."""
+    if not uri: return False, "Empty URI provided."
+    parsed = parse_vless_full(uri) or parse_vmess_full(uri)
+    if not parsed: return False, "Malformed URI: could not parse VLESS or VMess parameters."
+    
+    proto = parsed.get("protocol", "vless").upper()
+    uuid = parsed.get("uuid", "")
+    addr = parsed.get("address", "")
+    port = parsed.get("port", 443)
+    net = parsed.get("type", "tcp")
+    sec = parsed.get("security", "none")
+    sni = parsed.get("sni", "")
+    path = parsed.get("path", "")
+    pbk = parsed.get("pbk", "")
+    
+    warnings = []
+    import re
+    if not re.match(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", uuid):
+        warnings.append(f"⚠️ Non-standard UUID syntax: '{uuid}'")
+    try:
+        p_int = int(port)
+        if not (1 <= p_int <= 65535): warnings.append(f"⚠️ Out-of-bounds Port: {port}")
+    except ValueError:
+        warnings.append(f"⚠️ Invalid non-numeric Port: {port}")
+    
+    if net in ("ws", "xhttp", "splithttp") and not path.startswith("/"):
+        warnings.append(f"⚠️ Path should start with '/': '{path}'")
+    if sec == "reality" and len(pbk) < 40:
+        warnings.append("⚠️ REALITY public-key (pbk) appears unusually short.")
+        
+    lines = [
+        f"  {A.BOLD}{A.CYN}🔍 Proxy Configuration Inspector{A.RST}",
+        f"  ──────────────────────────────────────────",
+        f"  {A.WHT}Protocol:{A.RST}   {A.GRN}{proto}{A.RST}",
+        f"  {A.WHT}Address:{A.RST}    {addr}:{port}",
+        f"  {A.WHT}UUID:{A.RST}       {uuid}",
+        f"  {A.WHT}Network:{A.RST}    {net}",
+        f"  {A.WHT}Security:{A.RST}   {sec.upper()}" + (f" (SNI: {sni})" if sni else ""),
+    ]
+    if path: lines.append(f"  {A.WHT}Path:{A.RST}       {path}")
+    if pbk: lines.append(f"  {A.WHT}REALITY Pbk:{A.RST} {pbk[:15]}...{pbk[-5:]}")
+    lines.append("  ──────────────────────────────────────────")
+    if warnings:
+        lines.append(f"  {A.YEL}Diagnostics & Warnings:{A.RST}")
+        for w in warnings: lines.append(f"  {w}")
+    else:
+        lines.append(f"  {A.GRN}✅ Syntax Valid: No misconfigurations detected.{A.RST}")
+    return True, "\n".join(lines)
+
+
+def export_telegram_links(results: List[Result], top: int = 50) -> str:
+    """Generate clickable Telegram proxy links for alive results."""
+    lines = ["# Clickable Telegram Proxy Links (MTProto / SOCKS5 Local Tunnels)\n# Assuming local Xray client running on 127.0.0.1:10808\n\nhttps://t.me/socks?server=127.0.0.1&port=10808\ntg://socks?server=127.0.0.1&port=10808\n"]
+    limit = top if top > 0 else len(results)
+    for idx, r in enumerate(results[:limit], 1):
+        lines.append(f"# Node {idx}: {r.ip} (Score: {r.score:.1f})\n# VLESS/VMess link: {r.uris[0] if r.uris else 'N/A'}\n")
+    return "\n".join(lines)
+
+
+def test_censorship_probe(socks_port: int, target_host: str = "www.youtube.com") -> bool:
+    """Verify HTTP access through local SOCKS5 proxy."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(4.0)
+        s.connect(("127.0.0.1", socks_port))
+        s.sendall(b"\x05\x01\x00")
+        if s.recv(2) != b"\x05\x00": return False
+        host = target_host.encode("ascii")
+        req = b"\x05\x01\x00\x03" + bytes([len(host)]) + host + (80).to_bytes(2, "big")
+        s.sendall(req)
+        resp = s.recv(10)
+        if len(resp) < 4 or resp[1] != 0: return False
+        s.sendall(f"HEAD / HTTP/1.1\r\nHost: {target_host}\r\nUser-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n".encode())
+        hdr = s.recv(512)
+        s.close()
+        return b"HTTP/" in hdr and any(c in hdr[:30] for c in (b"200", b"301", b"302", b"307"))
+    except Exception: return False
+
+
+def test_udp_probe(socks_port: int) -> bool:
+    """Verify SOCKS5 UDP Associate forwarding."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(3.0)
+        s.connect(("127.0.0.1", socks_port))
+        s.sendall(b"\x05\x01\x00")
+        if s.recv(2) != b"\x05\x00": return False
+        s.sendall(b"\x05\x01\x00\x03\x09127.0.0.1\x00\x00")
+        resp = s.recv(10)
+        s.close()
+        return len(resp) >= 4 and resp[1] == 0
+    except Exception: return False
+
+
+def send_webhook_alert(url: str, st_obj):
+    """Send scan summary to Discord or Telegram webhook."""
+    if not url: return
+    alive_n = getattr(st_obj, "alive_n", getattr(st_obj, "alive_count", 0))
+    dead_n = getattr(st_obj, "dead_n", getattr(st_obj, "dead_count", 0))
+    total_n = getattr(st_obj, "total", 0)
+    best_spd = getattr(st_obj, "best_speed", 0.0)
+    mode_str = getattr(st_obj, "mode", "xray_pipeline")
+    desc = f"**cfray Scan Summary**\nMode: {mode_str}\nTotal Tested: {total_n}\nAlive: {alive_n}\nDead: {dead_n}\nFastest Speed: {best_spd:.2f} MB/s\n"
+    try:
+        if "discord.com/api/webhooks" in url:
+            payload = {"username": "cfray Bot", "embeds": [{"title": "⚡ cfray Alert", "description": desc, "color": 5814783}]}
+            req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json", "User-Agent": f"cfray/{VERSION}"})
+            urllib.request.urlopen(req, timeout=5)
+        elif "api.telegram.org/bot" in url:
+            payload = {"text": desc.replace("**", "*"), "parse_mode": "Markdown"}
+            req = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json", "User-Agent": f"cfray/{VERSION}"})
+            urllib.request.urlopen(req, timeout=5)
+    except Exception as e: _dbg(f"Webhook alert failed: {e}")
 
 
 # ─── Input Helpers ────────────────────────────────────────────────────────
@@ -2420,7 +2747,7 @@ def _xray_calc_scores(xst: XrayTestState):
 
 
 async def _test_single_variation(
-    var: XrayVariation, xray_bin: str, size: int, timeout: float,
+    var: XrayVariation, xray_bin: str, size: int, timeout: float, xst: Optional[XrayTestState] = None,
 ) -> bool:
     """Test one XrayVariation via Python-native VLESS or xray SOCKS5.
 
@@ -2500,6 +2827,10 @@ async def _test_single_variation(
             var.alive = True
             var.ttfb_ms = ttfb_ms
             var.speed_mbps = mbps
+            if xst and getattr(xst, "check_censorship", False):
+                var.censorship_ok = await loop.run_in_executor(None, test_censorship_probe, port)
+            if xst and getattr(xst, "check_udp", False):
+                var.udp_ok = await loop.run_in_executor(None, test_udp_probe, port)
             return True
         else:
             _py_err = err or "no-data"
@@ -2893,7 +3224,7 @@ async def xray_pipeline_test(xst: XrayTestState, pcfg: PipelineConfig):
                 source_uri=uri, result_uri=uri,
             )
             alive = await _test_single_variation(var, xst.xray_bin,
-                                                 XRAY_QUICK_SIZE, XRAY_QUICK_TIMEOUT)
+                                                 XRAY_QUICK_SIZE, XRAY_QUICK_TIMEOUT, xst)
             xst.done_count += 1
             if alive:
                 working_uri = uri
@@ -2954,7 +3285,7 @@ async def xray_pipeline_test(xst: XrayTestState, pcfg: PipelineConfig):
             if xst.interrupted:
                 return
             alive = await _test_single_variation(var, xst.xray_bin,
-                                                 XRAY_QUICK_SIZE, XRAY_QUICK_TIMEOUT)
+                                                 XRAY_QUICK_SIZE, XRAY_QUICK_TIMEOUT, xst)
             xst.done_count += 1
             xst.variations.append(var)
             if alive:
@@ -2996,7 +3327,7 @@ async def xray_pipeline_test(xst: XrayTestState, pcfg: PipelineConfig):
                 source_uri=pcfg.uri, result_uri=fb_result_uri,
             )
             alive = await _test_single_variation(var, xst.xray_bin,
-                                                 XRAY_QUICK_SIZE, XRAY_QUICK_TIMEOUT)
+                                                 XRAY_QUICK_SIZE, XRAY_QUICK_TIMEOUT, xst)
             if alive:
                 orig_sni = fb_sni  # Update SNI for Stage 3
                 xst.working_ips.append(orig_addr)
@@ -3081,7 +3412,7 @@ async def xray_pipeline_test(xst: XrayTestState, pcfg: PipelineConfig):
             if xst.interrupted:
                 return
             alive = await _test_single_variation(var, xst.xray_bin,
-                                                 XRAY_QUICK_SIZE, XRAY_QUICK_TIMEOUT)
+                                                 XRAY_QUICK_SIZE, XRAY_QUICK_TIMEOUT, xst)
             xst.done_count += 1
             if alive:
                 xst.alive_count += 1
@@ -3473,16 +3804,20 @@ def find_config_files() -> List[Tuple[str, str, int]]:
     return results
 
 
-async def _resolve(e: ConfigEntry, sem: asyncio.Semaphore, counter: List[int]) -> ConfigEntry:
+async def _resolve(e: ConfigEntry, sem: asyncio.Semaphore, counter: List[int], use_doh: bool = False) -> ConfigEntry:
     if e.ip:
         counter[0] += 1
         return e
     async with sem:
         try:
             loop = asyncio.get_running_loop()
-            info = await loop.getaddrinfo(e.address, 443, family=socket.AF_INET)
-            if info:
-                e.ip = info[0][4][0]
+            if use_doh:
+                ips = await loop.run_in_executor(None, resolve_doh, e.address)
+                if ips: e.ip = ips[0]
+            else:
+                info = await loop.getaddrinfo(e.address, 443, family=socket.AF_INET)
+                if info:
+                    e.ip = info[0][4][0]
         except Exception:
             e.ip = ""
         counter[0] += 1
@@ -3509,7 +3844,7 @@ async def resolve_all(st: State, workers: int = 100):
 
     prog_task = asyncio.create_task(_progress())
     try:
-        st.configs = list(await asyncio.gather(*[_resolve(c, sem, counter) for c in st.configs]))
+        st.configs = list(await asyncio.gather(*[_resolve(c, sem, counter, getattr(st, "use_doh", False)) for c in st.configs]))
     finally:
         prog_task.cancel()
         try:
@@ -3529,8 +3864,29 @@ async def resolve_all(st: State, workers: int = 100):
         )
 
 
-async def _lat_one(ip: str, sni: str, timeout: float) -> Tuple[float, float, str]:
-    """Measure TCP RTT and full TLS connection time (TCP+TLS handshake)."""
+async def _lat_one(ip: str, sni: str, timeout: float, measure_jitter: bool = False) -> Tuple[float, float, str, bool, float, float]:
+    """Measure TCP RTT, full TLS time, HTTP/2 ALPN negotiation, jitter, and packet loss."""
+    jitter = 0.0
+    loss = 0.0
+    if measure_jitter:
+        pings = []
+        fails = 0
+        for _ in range(4):
+            try:
+                t_j = time.monotonic()
+                _, _w_j = await asyncio.wait_for(asyncio.open_connection(ip, 443), timeout=max(timeout/2, 1.5))
+                pings.append((time.monotonic() - t_j) * 1000)
+                _w_j.close()
+                try: await _w_j.wait_closed()
+                except Exception: pass
+            except Exception:
+                fails += 1
+        loss = (fails / 4.0) * 100.0
+        if len(pings) >= 2:
+            avg_p = sum(pings) / len(pings)
+            variance = sum((p - avg_p) ** 2 for p in pings) / len(pings)
+            jitter = variance ** 0.5
+
     try:
         t0 = time.monotonic()
         r, w = await asyncio.wait_for(
@@ -3543,29 +3899,40 @@ async def _lat_one(ip: str, sni: str, timeout: float) -> Tuple[float, float, str
         except Exception:
             pass
     except asyncio.TimeoutError:
-        return -1, -1, "tcp-timeout"
+        return -1, -1, "tcp-timeout", False, jitter, 100.0 if not measure_jitter else loss
     except Exception as e:
-        return -1, -1, f"tcp:{str(e)[:50]}"
+        return -1, -1, f"tcp:{str(e)[:50]}", False, jitter, 100.0 if not measure_jitter else loss
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
+        try:
+            ctx.set_alpn_protocols(["h2", "http/1.1"])
+        except Exception:
+            pass
         t0 = time.monotonic()
         r, w = await asyncio.wait_for(
             asyncio.open_connection(ip, 443, ssl=ctx, server_hostname=sni),
             timeout=timeout,
         )
-        tls_full = (time.monotonic() - t0) * 1000  # full TCP+TLS time
+        tls_full = (time.monotonic() - t0) * 1000
+        h2_ok = False
+        try:
+            ssock = w.get_extra_info("ssl_object")
+            if ssock and ssock.selected_alpn_protocol() == "h2":
+                h2_ok = True
+        except Exception:
+            pass
         w.close()
         try:
             await w.wait_closed()
         except Exception:
             pass
-        return tcp, tls_full, ""
+        return tcp, tls_full, "", h2_ok, jitter, loss
     except asyncio.TimeoutError:
-        return tcp, -1, "tls-timeout"
+        return tcp, -1, "tls-timeout", False, jitter, loss
     except Exception as e:
-        return tcp, -1, f"tls:{str(e)[:50]}"
+        return tcp, -1, f"tls:{str(e)[:50]}", False, jitter, loss
 
 
 async def phase1(st: State, workers: int, timeout: float):
@@ -3582,10 +3949,13 @@ async def phase1(st: State, workers: int, timeout: float):
             res = st.res[ip]
             # Use speed.cloudflare.com as SNI — filters out non-CF IPs early
             # (non-CF IPs will fail TLS since they don't serve this cert)
-            tcp, tls, err = await _lat_one(ip, SPEED_HOST, timeout)
+            tcp, tls, err, h2, jitter, loss = await _lat_one(ip, SPEED_HOST, timeout, getattr(st, "measure_jitter", False))
             res.tcp_ms = tcp
             res.tls_ms = tls
             res.error = err
+            res.h2 = h2
+            res.jitter = jitter
+            res.loss = loss
             res.alive = tls > 0
             st.done_count += 1
             if res.alive:
@@ -3903,6 +4273,9 @@ def calc_scores(st: State):
         else:
             # No speed rounds at all (latency-only mode)
             r.score = round(lat, 1)
+        if getattr(r, "h2", False): r.score += 5.0
+        if getattr(r, "loss", 0.0) > 0: r.score -= r.loss * 0.5
+        if getattr(r, "jitter", 0.0) > 10.0: r.score -= min(15.0, (r.jitter - 10.0) * 0.2)
 
 
 def sorted_alive(st: State, key: str = "score") -> List[Result]:
@@ -4789,6 +5162,10 @@ def tui_pick_file() -> Optional[Tuple[str, str]]:
         if sys.platform == "linux":
             bx(f"  {A.CYN}{A.BOLD}d{A.RST}.  🚀 {A.WHT}Deploy Xray Server{A.RST}    {A.DIM}Install Xray on Linux VPS{A.RST}")
         bx(f"  {A.CYN}{A.BOLD}o{A.RST}.  ☁  {A.WHT}Worker Proxy{A.RST}          {A.DIM}Fresh workers.dev SNI for any VLESS config{A.RST}")
+        bx(f"  {A.CYN}{A.BOLD}w{A.RST}.  🛡️  {A.WHT}WARP WireGuard Gen{A.RST}    {A.DIM}Generate free anonymous WARP+ VPN config{A.RST}")
+        bx(f"  {A.CYN}{A.BOLD}g{A.RST}.  📡 {A.WHT}Local Sub Server{A.RST}      {A.DIM}Host scanned configs via HTTP server{A.RST}")
+        bx(f"  {A.CYN}{A.BOLD}l{A.RST}.  🧹 {A.WHT}Sub Deduplicator{A.RST}      {A.DIM}Clean & remove duplicate subscription links{A.RST}")
+        bx(f"  {A.CYN}{A.BOLD}i{A.RST}.  🕵️  {A.WHT}Config Inspector{A.RST}      {A.DIM}Deep diagnostic check & syntax validator{A.RST}")
         if sys.platform == "linux":
             bx(f"  {A.CYN}{A.BOLD}c{A.RST}.  🔧 {A.WHT}Connection Manager{A.RST}    {A.DIM}Manage existing Xray server configs{A.RST}")
         bx("")
@@ -4872,6 +5249,14 @@ def tui_pick_file() -> Optional[Tuple[str, str]]:
             return ("deploy", "")
         if key == "o":
             return ("worker_proxy", "")
+        if key == "w":
+            return ("warp_gen", "")
+        if key == "g":
+            return ("serve_sub", "")
+        if key == "l":
+            return ("clean_subs", "")
+        if key == "i":
+            return ("inspect", "")
         if key == "c" and sys.platform == "linux":
             return ("connection_manager", "")
         if key.isdigit() and 1 <= int(key) <= len(files):
@@ -5273,6 +5658,8 @@ async def _post_pipeline_results(
 
     # Show final dashboard
     xdash.draw()
+    if getattr(args, "notify", ""):
+        send_webhook_alert(args.notify, xst)
 
     # -- Post-scan interactive loop --
     try:
@@ -8236,6 +8623,13 @@ def do_export(
     save_csv(st, csv_path, sort_by)
     save_configs(st, cfg_path, top, sort_by)
     save_all_configs_sorted(st, full_path, sort_by)
+    try:
+        results_alive = sorted_alive(st, sort_by)
+        with open(_results_path(stem + "_singbox.json"), "w", encoding="utf-8") as f: f.write(export_singbox_json(results_alive, top))
+        with open(_results_path(stem + "_clash.yaml"), "w", encoding="utf-8") as f: f.write(export_clash_meta_yaml(results_alive, top))
+        with open(_results_path(stem + "_telegram.txt"), "w", encoding="utf-8") as f: f.write(export_telegram_links(results_alive, top))
+    except Exception:
+        pass
     st.saved = True
     return csv_path, cfg_path, full_path
 
@@ -8313,6 +8707,101 @@ async def run_scan(st: State, workers: int, speed_workers: int, timeout: float, 
 
     st.finished = True
     calc_scores(st)
+    if getattr(st, "geo_tag", False):
+        for r in sorted_alive(st, "score")[:50]:
+            if not r.country:
+                _, r.country = fetch_geo_colo(r.ip)
+    if getattr(st, "notify_url", ""):
+        send_webhook_alert(st.notify_url, st)
+
+
+def attach_state_args(st: State, args):
+    st.use_doh = getattr(args, "doh", False)
+    st.export_client = getattr(args, "export_client", "")
+    st.notify_url = getattr(args, "notify", "")
+    st.geo_tag = getattr(args, "geo", False)
+    st.measure_jitter = getattr(args, "jitter", False)
+
+
+async def _tui_warp_gen(args):
+    _w(A.CLR + A.HOME + A.SHOW)
+    _w(f"\n {A.BOLD}{A.CYN}Cloudflare WARP WireGuard Generator{A.RST}\n")
+    _w(f" {A.DIM}Registering anonymous WARP client device via Cloudflare API...{A.RST}\n\n")
+    _fl()
+    loop = asyncio.get_running_loop()
+    ok, conf, err = await loop.run_in_executor(None, generate_warp_config)
+    if ok:
+        _w(f" {A.GRN}Successfully generated WARP WireGuard Config ({err}):{A.RST}\n\n")
+        print(conf)
+        os.makedirs("results", exist_ok=True)
+        out_p = os.path.join("results", "warp.conf")
+        with open(out_p, "w") as f: f.write(conf)
+        _w(f"\n {A.GRN}Saved to {out_p}{A.RST}\n")
+    else:
+        _w(f" {A.RED}Failed to generate WARP config: {err}{A.RST}\n")
+    _w(f"\n {A.DIM}Press any key to return to menu...{A.RST}\n")
+    _fl()
+    _read_key_blocking()
+
+
+async def _tui_serve_sub(args):
+    _w(A.CLR + A.HOME + A.SHOW)
+    _w(f"\n {A.BOLD}{A.CYN}Local HTTP Subscription Server{A.RST}\n")
+    files = find_config_files()
+    res_top = os.path.join("results", "scan_top50.txt")
+    res_full = os.path.join("results", "scan_full_sorted.txt")
+    target_f = res_top if os.path.isfile(res_top) else (res_full if os.path.isfile(res_full) else (files[0][0] if files else ""))
+    if not target_f:
+        _w(f" {A.YEL}No configs or scanned results found.{A.RST}\n")
+        time.sleep(2)
+        return
+    _w(f" {A.GRN}Loading configs from: {target_f}{A.RST}\n")
+    with open(target_f, encoding="utf-8", errors="replace") as f:
+        uris = [l.strip() for l in f if l.strip().startswith(("vless://", "vmess://"))]
+    if not uris:
+        _w(f" {A.RED}No valid VLESS/VMess links found in {target_f}{A.RST}\n")
+        time.sleep(2)
+        return
+    st = State()
+    st.res["localhost"] = Result(ip="localhost", uris=uris, alive=True)
+    st.top = len(uris)
+    port_str = _tui_prompt_text("Port [8080]: ") or "8080"
+    port = int(port_str) if port_str.isdigit() else 8080
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, run_sub_server, st, port)
+
+
+async def _tui_clean_subs(args):
+    _w(A.CLR + A.HOME + A.SHOW)
+    _w(f"\n {A.BOLD}{A.CYN}Subscription Cleaner & Deduplicator{A.RST}\n")
+    _w(f" {A.DIM}Enter remote subscription URL or local file path:{A.RST}\n")
+    src = _tui_prompt_text("Source:")
+    if not src: return
+    _w(f"\n {A.DIM}Deduplicating & validating...{A.RST}\n")
+    loop = asyncio.get_running_loop()
+    tot, uniq, out_p = await loop.run_in_executor(None, clean_subscriptions, src, "")
+    if tot > 0:
+        _w(f" {A.GRN}Processed {tot} total links -> Kept {uniq} unique links!{A.RST}\n")
+        _w(f" {A.GRN}Saved clean list to: {out_p}{A.RST}\n")
+    else:
+        _w(f" {A.RED}No valid links found in source.{A.RST}\n")
+    _w(f"\n {A.DIM}Press any key to return to menu...{A.RST}\n")
+    _fl()
+    _read_key_blocking()
+
+
+async def _tui_inspect(args):
+    _w(A.CLR + A.HOME + A.SHOW)
+    _w(f"\n {A.BOLD}{A.CYN}Deep Proxy Config Inspector & Validator{A.RST}\n")
+    _w(f" {A.DIM}Paste any VLESS or VMess proxy URI to inspect parameters & diagnose issues:{A.RST}\n")
+    uri = _tui_prompt_text("URI:")
+    if not uri: return
+    _w("\n")
+    ok, diag = inspect_uri(uri)
+    print(diag)
+    _w(f"\n {A.DIM}Press any key to return to menu...{A.RST}\n")
+    _fl()
+    _read_key_blocking()
 
 
 async def run_tui(args, deploy_mode=False):
@@ -8383,6 +8872,26 @@ async def run_tui(args, deploy_mode=False):
                 else:
                     return
 
+            if input_method == "warp_gen":
+                await _tui_warp_gen(args)
+                if interactive: input_method = None; input_value = None; continue
+                else: return
+
+            if input_method == "serve_sub":
+                await _tui_serve_sub(args)
+                if interactive: input_method = None; input_value = None; continue
+                else: return
+
+            if input_method == "clean_subs":
+                await _tui_clean_subs(args)
+                if interactive: input_method = None; input_value = None; continue
+                else: return
+
+            if input_method == "inspect":
+                await _tui_inspect(args)
+                if interactive: input_method = None; input_value = None; continue
+                else: return
+
             if input_method == "find_clean":
                 result = await tui_run_clean_finder()
                 if result is None:
@@ -8410,6 +8919,7 @@ async def run_tui(args, deploy_mode=False):
         st = State()
         st.mode = mode
         st.top = args.top
+        attach_state_args(st, args)
 
         if args.rounds:
             st.rounds = parse_rounds_str(args.rounds)
@@ -8603,6 +9113,7 @@ async def run_headless(args):
     st = State()
     st.input_file = args.input
     st.mode = args.mode
+    attach_state_args(st, args)
 
     if args.rounds:
         st.rounds = parse_rounds_str(args.rounds)
@@ -8772,6 +9283,7 @@ async def run_headless_clean(args):
             st.input_file = f"clean ({len(results)} IPs)"
             st.mode = args.mode
             st.configs = configs
+            attach_state_args(st, args)
             if args.rounds:
                 st.rounds = parse_rounds_str(args.rounds)
             elif args.skip_download:
@@ -8886,6 +9398,20 @@ Examples:
     p.add_argument("--deploy-ip", metavar="IP")
     p.add_argument("--uninstall", action="store_true",
                    help="Remove everything cfray installed")
+    p.add_argument("--warp", action="store_true", help="Generate Cloudflare WARP WireGuard VPN config")
+    p.add_argument("--serve-sub", nargs="?", const=8080, type=int, metavar="PORT", help="Start local HTTP subscription server")
+    p.add_argument("--clean-subs", metavar="URL_OR_FILE", help="Clean & deduplicate subscription links")
+    p.add_argument("--watch", type=int, metavar="SECONDS", help="Run in daemon watchdog mode (rescan interval)")
+    p.add_argument("--notify", metavar="WEBHOOK_URL", help="Send Discord/Telegram alert on scan completion")
+    p.add_argument("--geo", action="store_true", help="Fetch Geo-IP country code and colocation tagging")
+    p.add_argument("--doh", action="store_true", help="Use Cloudflare DNS over HTTPS for resolution")
+    p.add_argument("--udp", action="store_true", help="Test UDP latency probe over Xray tunnel")
+    p.add_argument("--check-censorship", action="store_true", help="Test HTTP censorship probe over Xray tunnel")
+    p.add_argument("--export-client", choices=["singbox", "clash"], help="Auto-export Sing-box or Clash Meta client profile")
+    p.add_argument("--inspect", metavar="URI", help="Deep diagnostic check & syntax validator for proxy URI")
+    p.add_argument("--jitter", action="store_true", help="Perform multi-probe jitter & packet loss benchmark")
+    p.add_argument("--export-tg", action="store_true", help="Export clickable Telegram SOCKS5 proxy links")
+    p.add_argument("--alpn-h2", action="store_true", help="Probe HTTP/2 ALPN multiplexing capability")
     args = p.parse_args()
 
     args._mode_set = any(a == "-m" or a.startswith("--mode") for a in sys.argv)
@@ -8907,6 +9433,42 @@ Examples:
             ok, msg = _uninstall_all()
             print(msg)
             return
+        if getattr(args, "warp", False):
+            print("🔄 Registering anonymous Cloudflare WARP client...")
+            ok, conf, err = generate_warp_config()
+            if ok:
+                print(conf)
+                os.makedirs("results", exist_ok=True)
+                out_p = os.path.join("results", "warp.conf")
+                with open(out_p, "w") as f: f.write(conf)
+                print(f"\n✅ Saved WARP config to {out_p} ({err})")
+            else:
+                print(f"❌ Error: {err}")
+            return
+        if getattr(args, "serve_sub", None) is not None:
+            port = args.serve_sub or 8080
+            st = State()
+            files = find_config_files()
+            res_top = os.path.join("results", "scan_top50.txt")
+            target_f = res_top if os.path.isfile(res_top) else (files[0][0] if files else "")
+            if target_f:
+                with open(target_f, encoding="utf-8", errors="replace") as f:
+                    uris = [l.strip() for l in f if l.strip().startswith(("vless://", "vmess://"))]
+                st.res["localhost"] = Result(ip="localhost", uris=uris, alive=True)
+                st.top = len(uris)
+            run_sub_server(st, port)
+            return
+        if getattr(args, "clean_subs", None):
+            tot, uniq, out_p = clean_subscriptions(args.clean_subs, "")
+            if tot > 0:
+                print(f"✅ Cleaned {tot} inputs -> Kept {uniq} unique links. Saved to: {out_p}")
+            else:
+                print(f"❌ Could not load any valid VLESS/VMess subscription links from '{args.clean_subs}'.")
+            return
+        if getattr(args, "inspect", None):
+            ok, diag = inspect_uri(args.inspect)
+            print(diag)
+            return
         if getattr(args, "deploy", None):
             if sys.platform != "linux":
                 print("Error: --deploy is only supported on Linux.")
@@ -8918,7 +9480,13 @@ Examples:
         elif args.no_tui:
             if not args.input and not args.sub and not args.template:
                 p.error("--input, --sub, or --template is required in --no-tui mode")
-            asyncio.run(run_headless(args))
+            if getattr(args, "watch", None) and args.watch > 0:
+                print(f"⏱️ Watchdog Daemon running: re-scanning every {args.watch}s...")
+                while True:
+                    asyncio.run(run_headless(args))
+                    time.sleep(args.watch)
+            else:
+                asyncio.run(run_headless(args))
         else:
             asyncio.run(run_tui(args))
     except KeyboardInterrupt:
