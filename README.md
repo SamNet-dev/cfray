@@ -297,9 +297,55 @@ cfray is smart about Cloudflare's speed test limits:
 
 ---
 
-### 🆕 What's New in v1.1
+### 🌟 What's New in v1.2 (Step-by-Step Guide)
 
-v1.1 adds **server deployment**, **pipeline testing**, **worker proxy**, and a **connection manager** — turning cfray from a scanner into a full proxy toolkit.
+v1.2 transforms `cfray` into an all-in-one Cloudflare proxy toolkit. Here is how to use each new feature step by step:
+
+#### 1️⃣ Deep Config Inspector `[I]`
+Paste any VLESS or VMess link to run an automated diagnostic check.
+- **What it checks**: Validates UUIDv4 syntax, checks port bounds (1–65535), verifies WebSocket paths start with `/`, and checks REALITY public key (`pbk`) length.
+- **How to use**: Press `I` on the main TUI menu or run in terminal:
+  ```bash
+  python3 scanner.py --inspect "vless://uuid@domain:443?type=ws&..."
+  ```
+
+#### 2️⃣ Anonymous Cloudflare WARP WireGuard Generator `[W]`
+Register a free, anonymous Cloudflare WARP+ account on the fly and save a working WireGuard VPN profile (`warp.conf`).
+- **How to use**: Press `W` on the main TUI menu or run:
+  ```bash
+  python3 scanner.py --warp
+  ```
+
+#### 3️⃣ Local Subscription Web Server `[G]`
+Host your fastest scanned configs locally over a built-in lightweight HTTP web server.
+- **How to use**: Press `G` on the main TUI menu or run:
+  ```bash
+  python3 scanner.py --serve-sub 8080
+  ```
+  Then subscribe your phone or client application (v2rayNG, Nekobox, Sing-box) directly to `http://localhost:8080/`.
+
+#### 4️⃣ Subscription Deduplicator & Cleaner `[L]`
+Clean messy remote subscription feeds or local files by stripping out duplicate links and validating URI syntax.
+- **How to use**: Press `L` on the main TUI menu or run:
+  ```bash
+  python3 scanner.py --clean-subs https://example.com/sub.txt
+  ```
+
+#### 5️⃣ Automated Client Exporters (`Sing-box`, `Clash Meta`, `Telegram`)
+When exporting results (`E` or `A` in the dashboard), `cfray` automatically builds ready-to-use profiles in `results/`:
+- **`*_singbox.json`**: Complete JSON outbounds array formatted for Sing-box clients.
+- **`*_clash.yaml`**: Standard YAML proxy node list compatible with Clash Meta / Mihomo core.
+- **`*_telegram.txt`**: Instant clickable `tg://socks` links pointing to local Xray SOCKS5 tunnels (`--export-tg`).
+
+#### 6️⃣ Advanced Network Benchmarks & Automation
+Supercharge the scanning engine with advanced launch flags:
+```bash
+# Perform multi-probe Jitter & Loss testing + HTTP/2 ALPN probe + DoH resolution + Geo colocation tagging
+python3 scanner.py -i configs.txt --jitter --alpn-h2 --doh --geo
+
+# Continuous Watchdog Daemon with Telegram/Discord Webhook Alerts
+python3 scanner.py -i configs.txt --no-tui --watch 3600 --notify https://discord.com/api/webhooks/...
+```
 
 ---
 
@@ -703,9 +749,55 @@ cfray هوشمندانه با محدودیت‌های سرعت‌سنجی کلا
 
 ---
 
-### 🆕 چه چیزهایی در v1.2 اضافه شده
+### 🌟 قابلیت‌های جدید در v1.2 (راهنمای گام به گام)
 
-نسخه v1.2 قابلیت‌های پیشرفته جدیدی شامل **تولیدکننده WARP WireGuard**، **سرور محلی اشتراک**، **پاک‌کننده اشتراک**، **دی‌ان‌اس DoH**، **برچسب موقعیت جغرافیایی (Geo-IP)**، **پروب‌های UDP و عبور از فیلترینگ**، **وب‌هوک هشدار**، **حالت واچ‌داگ (Watchdog)** و **خروجی Sing-box / Clash Meta** رو به cfray اضافه کرده.
+نسخه v1.2 ابزار `cfray` رو به یک جعبه‌ابزار همه‌کاره شبکه تبدیل کرده. در ادامه راهنمای استفاده گام به گام از تمام قابلیت‌های جدید آمده است:
+
+#### 1️⃣ بازرس عمیق کانفیگ `[I]`
+هر لینک VLESS یا VMess رو وارد کنید تا یک آنالیز و عیب‌یابی کامل روی ساختارش انجام بشه.
+- **چه مواردی بررسی میشه:** صحت فرمت UUID، مجاز بودن پورت (۱ تا ۶۵۵۳۵)، شروع شدن مسیر وب‌سوکت با `/` و بررسی طول کلید عمومی REALITY.
+- **نحوه استفاده:** کلید `I` در منوی اصلی TUI یا اجرای دستور:
+  ```bash
+  python3 scanner.py --inspect "vless://uuid@domain:443?type=ws&..."
+  ```
+
+#### 2️⃣ تولیدکننده کانفیگ WARP WireGuard `[W]`
+ثبت‌نام آنی اکانت رایگان و ناشناس Cloudflare WARP+ و دریافت فایل کانفیگ وایرگارد (`warp.conf`).
+- **نحوه استفاده:** کلید `W` در منوی اصلی TUI یا اجرای دستور:
+  ```bash
+  python3 scanner.py --warp
+  ```
+
+#### 3️⃣ سرور محلی اشتراک `[G]`
+سیستم خودتون رو به یک وب‌سرور HTTP محلی برای ارائه بهترین کانفیگ‌های اسکن‌شده به کلاینت‌ها تبدیل کنید.
+- **نحوه استفاده:** کلید `G` در منوی اصلی TUI یا اجرای دستور:
+  ```bash
+  python3 scanner.py --serve-sub 8080
+  ```
+  سپس لینک `http://localhost:8080/` رو در برنامه‌هایی مثل v2rayNG، Nekobox یا Sing-box وارد کنید.
+
+#### 4️⃣ پاک‌کننده و حذف لینک‌های تکراری اشتراک `[L]`
+لینک‌های اشتراک راه دور یا فایل‌های محلی رو بررسی، اعتبارسنجی و لینک‌های تکراری یا خراب رو حذف کنید.
+- **نحوه استفاده:** کلید `L` در منوی اصلی TUI یا اجرای دستور:
+  ```bash
+  python3 scanner.py --clean-subs https://example.com/sub.txt
+  ```
+
+#### 5️⃣ خروجی‌های خودکار کلاینت‌ها (`Sing-box`، `Clash Meta`، `تلگرام`)
+هنگام گرفتن خروجی (کلید `E` یا `A` در داشبورد نتایج)، فایل‌های زیر خودکار در پوشه `results/` ساخته میشن:
+- **`singbox.json_*`**: فایل کانفیگ JSON استاندارد و آماده برای کلاینت‌های Sing-box.
+- **`clash.yaml_*`**: پروفایل استاندارد YAML آماده ایمپورت در Clash Meta / Mihomo.
+- **`telegram.txt_*`**: لینک‌های اتصال سریع `tg://socks` برای اتصال یک‌کلیکه تلگرام (`export-tg--`).
+
+#### 6️⃣ بنچمارک‌های حرفه‌ای شبکه و اتوماسیون پس‌زمینه
+موتور اسکنر رو با گزینه‌های پیشرفته زیر قدرتمندتر کنید:
+```bash
+# اجرای تست پایداری و جیتر + بررسی HTTP/2 ALPN + رزولوشن DoH + تشخیص دیتاسنتر (مثلاً FRA)
+python3 scanner.py -i configs.txt --jitter --alpn-h2 --doh --geo
+
+# اجرای دائمی پس‌زمینه (Watchdog) با ارسال آمار به وب‌هوک تلگرام/دیسکورد
+python3 scanner.py -i configs.txt --no-tui --watch 3600 --notify https://discord.com/api/webhooks/...
+```
 
 ---
 
